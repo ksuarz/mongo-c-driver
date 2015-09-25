@@ -623,10 +623,11 @@ _mongoc_gridfs_file_refresh_page (mongoc_gridfs_file_t *file)
       data = (uint8_t *)"";
       len = 0;
    } else {
-      /* if we have a cursor, but the cursor doesn't have the chunk we're going
-       * to need, destroy it (we'll grab a new one immediately there after) */
-      if (file->cursor &&
-          (file->n < file->cursor_range[0] || file->n > file->cursor_range[1])) {
+      /* If we have a cursor, invalidate it if it doesn't have our chunk or the
+       * chunk we want is too far away */
+      if (file->cursor && (file->n < file->cursor_range[0] ||
+                           file->n > file->cursor_range[1] ||
+                           file->n - file->cursor_range[0] > 1)) {
          mongoc_cursor_destroy (file->cursor);
          file->cursor = NULL;
       }
