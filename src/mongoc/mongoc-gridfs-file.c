@@ -411,6 +411,7 @@ mongoc_gridfs_file_readv (mongoc_gridfs_file_t *file,
    int32_t r;
    size_t i;
    uint32_t iov_pos;
+   int64_t expire_at;
 
    ENTRY;
 
@@ -419,7 +420,10 @@ mongoc_gridfs_file_readv (mongoc_gridfs_file_t *file,
    BSON_ASSERT (iovcnt);
    BSON_ASSERT (timeout_msec <= INT_MAX);
 
-   /* TODO: we should probably do something about timeout_msec here */
+   /* determine when to stop reading */
+   if (timeout_msec) {
+      expire_at = bson_get_monotonic_time () + (int64_t)(timeout_msec * 1000);
+   }
 
    /* Reading when positioned past the end does nothing */
    if (file->pos >= file->length) {
@@ -435,6 +439,12 @@ mongoc_gridfs_file_readv (mongoc_gridfs_file_t *file,
       iov_pos = 0;
 
       for (;; ) {
+         /* stop reading if we've exceeded the timeout */
+         if (timeout_msec && bson_get_monotonic_time () >= expire_at) {
+            errno = ETIMEDOUT;
+            RETURN (bytes_read);
+         }
+
          r = _mongoc_gridfs_file_page_read (file->page,
                                            (uint8_t *)iov[i].iov_base + iov_pos,
                                            (uint32_t)(iov[i].iov_len - iov_pos));
@@ -475,6 +485,7 @@ mongoc_gridfs_file_writev (mongoc_gridfs_file_t *file,
    int32_t r;
    size_t i;
    uint32_t iov_pos;
+   int64_t expire_at;
 
    ENTRY;
 
@@ -483,7 +494,10 @@ mongoc_gridfs_file_writev (mongoc_gridfs_file_t *file,
    BSON_ASSERT (iovcnt);
    BSON_ASSERT (timeout_msec <= INT_MAX);
 
-   /* TODO: we should probably do something about timeout_msec here */
+   /* determine when to stop writing */
+   if (timeout_msec) {
+      expire_at = bson_get_monotonic_time () + (int64_t)(timeout_msec * 1000);
+   }
 
    /* Pull in the correct page */
    if (!file->page && !_mongoc_gridfs_file_refresh_page (file)) {
@@ -499,6 +513,12 @@ mongoc_gridfs_file_writev (mongoc_gridfs_file_t *file,
       iov_pos = 0;
 
       for (;; ) {
+         /* stop writing if the timeout is exceeded */
+         if (timeout_msec && bson_get_monotonic_time () >= expire_at) {
+            errno = ETIMEDOUT;
+            RETURN (bytes_written);
+         }
+
          if (!file->page && !_mongoc_gridfs_file_refresh_page (file)) {
             return -1;
          }
