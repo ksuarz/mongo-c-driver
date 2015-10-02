@@ -623,11 +623,8 @@ _mongoc_gridfs_file_refresh_page (mongoc_gridfs_file_t *file)
       data = (uint8_t *)"";
       len = 0;
    } else {
-      /* If we have a cursor, invalidate it if it doesn't have our chunk or the
-       * chunk we want is too far away */
-      if (file->cursor && (file->n < file->cursor_range[0] ||
-                           file->n > file->cursor_range[1] ||
-                           file->n - file->cursor_range[0] > 1)) {
+      /* If we have a cursor, discard it if it doesn't have our chunk in the current batch */
+      if (file->cursor && (file->n < file->chunk_range[0] || file->n > file->chunk_range[1])) {
          mongoc_cursor_destroy (file->cursor);
          file->cursor = NULL;
       }
@@ -657,8 +654,8 @@ _mongoc_gridfs_file_refresh_page (mongoc_gridfs_file_t *file)
                                                 MONGOC_QUERY_NONE, 0, 0, 0, query,
                                                 fields, NULL);
 
-         file->cursor_range[0] = file->n;
-         file->cursor_range[1] = (uint32_t)(file->length / file->chunk_size);
+         file->chunk_range[0] = file->n;
+         file->chunk_range[1] = file->n + (uint32_t)(file->cursor->batch_size / file->chunk_size);
 
          bson_destroy (query);
          bson_destroy (fields);
@@ -668,7 +665,7 @@ _mongoc_gridfs_file_refresh_page (mongoc_gridfs_file_t *file)
 
       /* we might have had a cursor before, then seeked ahead past a chunk.
        * iterate until we're on the right chunk */
-      while (file->cursor_range[0] <= file->n) {
+      while (file->chunk_range[0] <= file->n) {
          if (!mongoc_cursor_next (file->cursor, &chunk)) {
             if (file->cursor->failed) {
                memcpy (&(file->error), &(file->cursor->error),
@@ -679,7 +676,7 @@ _mongoc_gridfs_file_refresh_page (mongoc_gridfs_file_t *file)
             RETURN (0);
          }
 
-         file->cursor_range[0]++;
+         file->chunk_range[0]++;
       }
 
       bson_iter_init (&iter, chunk);
