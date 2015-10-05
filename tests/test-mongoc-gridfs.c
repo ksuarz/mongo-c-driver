@@ -558,6 +558,47 @@ test_stream (void)
 }
 
 static void
+test_timeout (void)
+{
+   bson_error_t          error;
+   mongoc_client_t      *client;
+   mongoc_gridfs_file_t *file;
+   mongoc_gridfs_t      *gridfs;
+   mongoc_iovec_t        iov[1];
+   char                  buf[] = "abcd";
+   ssize_t               r;
+
+   iov [0].iov_base = buf;
+   iov [0].iov_len = sizeof (buf) - 1;
+
+   client = test_framework_client_new ();
+
+   ASSERT_OR_PRINT (gridfs = get_test_gridfs (client, "write", &error), error);
+
+   mongoc_gridfs_drop (gridfs, &error);
+
+   file = mongoc_gridfs_create_file (gridfs, &opt);
+   assert (file);
+
+   /* Test a four-byte write within 3 minutes */
+   r = mongoc_gridfs_file_writev (file, iov, 1, 180000);
+   assert (errno != ETIMEDOUT);
+   assert (r == 4);
+
+   /* Test a write timeout within 10 seconds */
+   r = mongoc_gridfs_file_writev (file, iov, 1, 10000);
+   assert (errno == ETIMEDOUT);
+   assert (r < 4);
+
+   mongoc_gridfs_file_destroy (file);
+
+   drop_collections (gridfs, &error);
+   mongoc_gridfs_destroy (gridfs);
+
+   mongoc_client_destroy (client);
+}
+
+static void
 test_remove_by_filename (void)
 {
    mongoc_gridfs_t *gridfs;
@@ -616,5 +657,6 @@ test_gridfs_install (TestSuite *suite)
    TestSuite_Add (suite, "/GridFS/stream", test_stream);
    TestSuite_Add (suite, "/GridFS/remove", test_remove);
    TestSuite_Add (suite, "/GridFS/write", test_write);
+   TestSuite_Add (suite, "/GridFS/timeout", test_timeout);
    TestSuite_Add (suite, "/GridFS/remove_by_filename", test_remove_by_filename);
 }
