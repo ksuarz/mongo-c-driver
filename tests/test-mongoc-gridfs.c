@@ -1,11 +1,14 @@
 #include <mongoc.h>
 #define MONGOC_INSIDE
 #include <mongoc-gridfs-file-private.h>
+#include <mongoc-uri-private.h>
 #undef MONGOC_INSIDE
 
-#include "test-libmongoc.h"
-#include "mongoc-tests.h"
 #include "TestSuite.h"
+#include "mock_server/future-functions.h"
+#include "mock_server/mock-server.h"
+#include "mongoc-tests.h"
+#include "test-libmongoc.h"
 
 
 static mongoc_gridfs_t *
@@ -21,6 +24,49 @@ get_test_gridfs (mongoc_client_t *client,
    bson_free (gen);
 
    return mongoc_client_get_gridfs (client, "test", n, error);
+}
+
+
+static mongoc_gridfs_t *
+get_mock_gridfs (mock_server_t   *server,
+                 mongoc_client_t *client,
+                 const char      *name,
+                 bson_error_t    *error)
+{
+   mongoc_gridfs_t *gridfs;
+   request_t *request;
+   future_t *future;
+
+   /* Create two GridFS indexes */
+   future = future_client_get_gridfs (client, name, "fs", error);
+   request = mock_server_receives_command (server,
+                                           name,
+                                           MONGOC_QUERY_SLAVE_OK,
+                                           "{'createIndexes' : 'foo.chunks',"
+                                           " 'indexes' : ["
+                                           "   { 'key' : { 'files_id' : 1, 'n' : 1 },"
+                                           "     'name' : 'files_id_1_n_1', "
+                                           "     'unique' : true }"
+                                           "  ]}");
+   mock_server_replies_simple (request, "{'ok' : 1}");
+   request_destroy (request);
+   request = mock_server_receives_command (server,
+                                           name,
+                                           MONGOC_QUERY_SLAVE_OK,
+                                           "{'createIndexes' : 'foo.chunks',"
+                                           " 'indexes' : ["
+                                           "   { 'key' : { 'filename' : 1 },"
+                                           "     'name' : 'filename_1' }"
+                                           "  ]}");
+   mock_server_replies_simple (request, "{'ok' : 1}");
+   request_destroy (request);
+
+   /* Resolve the future and return the new GridFS object */
+   gridfs = future_get_mongoc_gridfs_ptr (future);
+   ASSERT (gridfs);
+
+   future_destroy (future);
+   return gridfs;
 }
 
 bool
@@ -293,6 +339,107 @@ test_seek (void)
 
    ASSERT_CMPINT (mongoc_gridfs_file_seek (file, 0, SEEK_END), ==, 0);
    ASSERT_CMPINT64 (mongoc_gridfs_file_tell (file), ==, mongoc_gridfs_file_get_length (file));
+
+   mongoc_gridfs_file_destroy (file);
+
+   drop_collections (gridfs, &error);
+   mongoc_gridfs_destroy (gridfs);
+
+   mongoc_client_destroy (client);
+}
+
+
+static void
+test_long_seek (void)
+{
+   bson_error_t             error;
+   char                     buf[4];
+   future_t                *future;
+   int64_t                  cursor_id;
+   mock_server_t           *server;
+   mongoc_client_t         *client;
+   mongoc_gridfs_file_opt_t opts = {0};
+   mongoc_gridfs_file_t    *file;
+   mongoc_gridfs_t         *gridfs;
+   mongoc_iovec_t           riov;
+   request_t               *request;
+   ssize_t                  r;
+
+   riov.iov_base = buf;
+   riov.iov_len = sizeof (buf);
+   opts.chunk_size = 4;
+
+   /* Start the mock server and make a connection */
+   server = mock_server_with_autoismaster (3);
+   mock_server_run (server);
+   client = mongoc_client_new_from_uri (mock_server_get_uri (server));
+
+   /* Set up a GridFS file for testing */
+   gridfs = get_mock_gridfs (server, client, "long-seek", NULL);
+   file = mongoc_gridfs_create_file (gridfs, &opts);
+   file->length = file->chunk_size * 4;
+   ASSERT (file);
+
+   /* Fetch a batch of chunks and maintain a cursor after an operation */
+   {
+      /* Seek to the beginning and perform a read */
+      ASSERT_CMPINT (mongoc_gridfs_file_seek (file, 0, SEEK_SET), ==, 0);
+
+      future = future_gridfs_file_readv (file, &riov, 1, 2, 0);
+      request = mock_server_receives_query (server,
+                                            "long-seek.fs.chunks",
+                                            MONGOC_QUERY_NONE,
+                                            0,
+                                            0,
+                                            "{'$query'   : {'files_id' : 1, 'n' : {'$gte' : 1}},"
+                                               " '$orderby' : {'n' : 1}}",
+                                            "{'n' : 1, 'data' : 1, '_id' : 0}");
+      mock_server_replies (request, MONGOC_REPLY_AWAIT_CAPABLE, 42, 0, 2,
+                           "[{'n' : 1, 'data' : 'abcd'}, {'n' : 2, 'data' : 'efgh'}]");
+      request_destroy (request);
+
+      /* We should have read two bytes and still have a cursor open */
+      r = future_get_ssize_t (future);
+      ASSERT_CMPLONG (r, ==, 2L);
+      ASSERT_CMPINT (memcmp (buf, "ab", 2), ==, 0);
+      ASSERT (mongoc_cursor_is_alive(file->cursor));
+      cursor_id = mongoc_cursor_get_id (file->cursor);
+      ASSERT (cursor_id);
+   }
+
+   /* Skip ahead to a new page in the same batch, retaining the cursor */
+   {
+      ASSERT_CMPINT (mongoc_gridfs_file_seek (file, file->chunk_size, SEEK_SET), ==, 0);
+
+      /* Perform a read, which should not require server traffic */
+      r = mongoc_gridfs_file_readv (file, &riov, 1, 2, 0);
+      ASSERT_CMPLONG (r, ==, 2L);
+      ASSERT_CMPINT (memcmp (buf, "ef", 2), ==, 0);
+      ASSERT_CMPINT64 (cursor_id, ==, mongoc_cursor_get_id (file->cursor));
+   }
+
+   /* Skip ahead many pages, destroying the old cursor */
+   {
+      /* Seek to the fourth page */
+      ASSERT_CMPINT (mongoc_gridfs_file_seek (file, file->chunk_size * 4, SEEK_SET), ==, 0);
+
+      future = future_gridfs_file_readv (file, &riov, 1, 2, 0);
+      request = mock_server_receives_query (server,
+                                            "long-seek.fs.chunks",
+                                            MONGOC_QUERY_NONE,
+                                            0,
+                                            0,
+                                            "{'$query'   : {'files_id' : 1, 'n' : {'$gte' : 4}},"
+                                               " '$orderby' : {'n' : 1}}",
+                                            "{'n' : 1, 'data' : 1, '_id' : 0}");
+      mock_server_replies (request, MONGOC_REPLY_AWAIT_CAPABLE, 0, 0, 2,
+                           "[{'n' : 3, 'data' : 'ijkl'}, {'n' : 2, 'data' : 'mnop'}]");
+      request_destroy (request);
+
+      r = future_get_ssize_t (future);
+      ASSERT_CMPLONG (r, ==, 2L);
+      ASSERT_CMPINT64 (cursor_id, !=, mongoc_cursor_get_id (file->cursor));
+   }
 
    mongoc_gridfs_file_destroy (file);
 
@@ -580,13 +727,14 @@ test_gridfs_install (TestSuite *suite)
 {
    TestSuite_Add (suite, "/GridFS/create", test_create);
    TestSuite_Add (suite, "/GridFS/create_from_stream", test_create_from_stream);
-   TestSuite_Add (suite, "/GridFS/list", test_list);
-   TestSuite_Add (suite, "/GridFS/properties", test_properties);
    TestSuite_Add (suite, "/GridFS/empty", test_empty);
+   TestSuite_Add (suite, "/GridFS/list", test_list);
+   TestSuite_Add (suite, "/GridFS/long_seek", test_long_seek);
+   TestSuite_Add (suite, "/GridFS/properties", test_properties);
    TestSuite_Add (suite, "/GridFS/read", test_read);
+   TestSuite_Add (suite, "/GridFS/remove", test_remove);
+   TestSuite_Add (suite, "/GridFS/remove_by_filename", test_remove_by_filename);
    TestSuite_Add (suite, "/GridFS/seek", test_seek);
    TestSuite_Add (suite, "/GridFS/stream", test_stream);
-   TestSuite_Add (suite, "/GridFS/remove", test_remove);
    TestSuite_Add (suite, "/GridFS/write", test_write);
-   TestSuite_Add (suite, "/GridFS/remove_by_filename", test_remove_by_filename);
 }
