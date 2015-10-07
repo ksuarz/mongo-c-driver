@@ -23,12 +23,55 @@ get_test_gridfs (mongoc_client_t *client,
    return mongoc_client_get_gridfs (client, "test", n, error);
 }
 
+
 bool
 drop_collections (mongoc_gridfs_t *gridfs,
                   bson_error_t    *error)
 {
    return (mongoc_collection_drop (mongoc_gridfs_get_files (gridfs), error) &&
            mongoc_collection_drop (mongoc_gridfs_get_chunks (gridfs), error));
+}
+
+
+bool
+mock_gridfs_readv (mock_server_t        *server,
+                   mongoc_gridfs_file_t *file,
+                   size_t                min_bytes,
+                   ssize_t               expected_result,
+                   uint32_t              server_delay,
+                   uint32_t              timeout_msec)
+{
+   char            buf[100];
+   mongoc_iovec_t  iov[1];
+   future_t       *future;
+   request_t      *request;
+   ssize_t         result;
+
+   iov[0].iov_base = buf;
+   iov[0].iov_len = sizeof buf;
+
+   /* TODO */
+   future = future_gridfs_file_readv (file, iov, 1, min_bytes, timeout_msec);
+
+   request = mock_server_receives_command (server,
+                                           "test",
+                                           MONGOC_QUERY_SLAVE_OK,
+                                           "{ 'n' : 1,
+                                            }");
+
+   /* Respond to the request, or fake a server delay? */
+   if (server_delay) {
+      usleep (server_delay * 100);
+   } else {
+      mock_server_replies_simple (request, " TODO ");
+   }
+   request_destroy (request);
+
+
+   result = future_value_get_ssize_t (future);
+   future_destroy (future);
+
+   return result == expected_result;
 }
 
 
@@ -300,6 +343,80 @@ test_seek (void)
    mongoc_gridfs_destroy (gridfs);
 
    mongoc_client_destroy (client);
+}
+
+
+static void
+test_cursor (void)
+{
+//   mock_server_t *server;
+//   mongoc_client_t          *client;
+//   mongoc_gridfs_file_t     *file;
+//   mongoc_gridfs_t          *gridfs;
+//   mongoc_iovec_t            riov;
+//   mongoc_stream_t          *stream;
+//   bson_error_t              error;
+//   char                      buf[1];
+//   int64_t                   new_offset;
+//   int32_t                   new_page;
+//   int64_t                   cursor_id;
+//   ssize_t                   r;
+//
+//   riov.iov_base = buf;
+//   riov.iov_len = sizeof (buf);
+//
+//   client = test_framework_client_new ();
+//   
+//   ASSERT_OR_PRINT (gridfs = get_test_gridfs (client, "cursor", &error), error);
+//
+//   mongoc_gridfs_drop (gridfs, &error);
+//
+//   stream = mongoc_stream_file_new_for_path (BINARY_DIR"/gridfs-large.dat", O_RDONLY, 0);
+//
+//   file = mongoc_gridfs_create_file_from_stream (gridfs, stream, NULL);
+//   assert (file);
+//   assert (mongoc_gridfs_file_save (file));
+//
+//   /* Test that we have a cursor after a normal operation that is NOT exhausted */
+//   fprintf (stderr, "Test: cursor exists after normal operation\n");
+//   assert (mongoc_gridfs_file_seek (file, 0, SEEK_SET) == 0);
+//   r = mongoc_gridfs_file_readv (file, &riov, 1, 1, 0);
+//   assert (r == 1);
+//   assert (mongoc_cursor_is_alive(file->cursor));
+//   cursor_id = mongoc_cursor_get_id (file->cursor);
+//   assert (cursor_id);
+//
+//   /* Skip ahead one page, retaining the cursor */
+//   fprintf (stderr, "Test: skip ahead one page, retaining the cursor\n");
+//   assert (mongoc_gridfs_file_seek (file, file->chunk_size, SEEK_CUR) == 0);
+//   r = mongoc_gridfs_file_readv (file, &riov, 1, 1, 0);
+//   assert (r == 1);
+//   assert (cursor_id == mongoc_cursor_get_id (file->cursor));
+//
+//   /* Skip ahead many pages, destroying the old cursor */
+//   fprintf (stderr, "Test: skip ahead many pages, destroying the old cursor\n");
+//   new_page = file->chunk_range[1] + 1;
+//   new_offset = new_page * file->chunk_size;
+//   assert (mongoc_gridfs_file_seek (file, new_offset, SEEK_SET) == 0);
+//   r = mongoc_gridfs_file_readv (file, &riov, 1, 1, 0);
+//   assert (r == 1);
+//   assert (cursor_id != mongoc_cursor_get_id (file->cursor));
+//   cursor_id = mongoc_cursor_get_id (file->cursor);
+//   assert (cursor_id);
+//
+//   /* Skip back pages, also destroying the old cursor */
+//   fprintf (stderr, "Test: skip back pages, destroying the old cursor\n");
+//   assert (mongoc_gridfs_file_seek (file, 0, SEEK_SET) == 0);
+//   r = mongoc_gridfs_file_readv (file, &riov, 1, 1, 0);
+//   assert (r == 1);
+//   assert (cursor_id != mongoc_cursor_get_id (file->cursor));
+//
+//   mongoc_gridfs_file_destroy (file);
+//
+//   drop_collections (gridfs, &error);
+//   mongoc_gridfs_destroy (gridfs);
+//
+//   mongoc_client_destroy (client);
 }
 
 
