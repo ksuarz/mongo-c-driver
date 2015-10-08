@@ -6,6 +6,8 @@
 #include "test-libmongoc.h"
 #include "mongoc-tests.h"
 #include "TestSuite.h"
+#include "mock_server/mock-server.h"
+#include "mock_server/future-functions.h"
 
 
 static mongoc_gridfs_t *
@@ -56,8 +58,7 @@ mock_gridfs_readv (mock_server_t        *server,
    request = mock_server_receives_command (server,
                                            "test",
                                            MONGOC_QUERY_SLAVE_OK,
-                                           "{ 'n' : 1,
-                                            }");
+                                           "{ 'n' : 1");
 
    /* Respond to the request, or fake a server delay? */
    if (server_delay) {
@@ -675,37 +676,48 @@ test_stream (void)
 }
 
 static void
-test_timeout (void)
+test_read_timeout (void)
 {
-   bson_error_t          error;
-   mongoc_client_t      *client;
+
+   bson_error_t *error;
+   char buf[4];
+   future_t *future;
+   mock_server_t *server;
+   mongoc_client_t *client;
+   mongoc_gridfs_file_opt_t opts = {0};
    mongoc_gridfs_file_t *file;
-   mongoc_gridfs_t      *gridfs;
-   mongoc_iovec_t        iov[1];
-   char                  buf[] = "abcd";
-   ssize_t               r;
+   mongoc_gridfs_t *gridfs;
+   mongoc_iovec_t riov;
+   request_t *request;
+   ssize_t r;
 
-   iov [0].iov_base = buf;
-   iov [0].iov_len = sizeof (buf) - 1;
+   riov.iov_base = buf;
+   riov.iov_len = sizeof buf;
+   opts.chunk_size = sizeof buf;
 
-   client = test_framework_client_new ();
+   server = mock_server_with_autoismaster (3);
+   mock_server_run (server);
+   client = mongoc_client_new_from_uri (mock_server_get_uri (server));
 
-   ASSERT_OR_PRINT (gridfs = get_test_gridfs (client, "write", &error), error);
+   gridfs = get_mock_gridfs (server, client, "timeout", NULL);
+   file = mongoc_gridfs_create_file (gridfs, &opts);
+   file->length = sizeof buf;
+   ASSERT (file);
 
-   mongoc_gridfs_drop (gridfs, &error);
+   /* Test a four-byte write within 100 ms */
+   future = future_gridfs_file_readv (file, &riov, 1, 4, 100);
+   request = mock_server_receives_query (server, "timeout", MONGOC_QUERY_NONE, 0, 0, "TODO", "TODO");
+   mock_server_replies (request, MONGOC_REPLY_NONE, 1, 1, 1, "TODO");
 
-   file = mongoc_gridfs_create_file (gridfs, &opt);
-   assert (file);
+   ASSERT_CMPINT (errno, !=, ETIMEDOUT);
+   ASSERT_CMPLONG (r, ==, 4L);
 
-   /* Test a four-byte write within 3 minutes */
-   r = mongoc_gridfs_file_writev (file, iov, 1, 180000);
-   assert (errno != ETIMEDOUT);
-   assert (r == 4);
-
-   /* Test a write timeout within 10 seconds */
-   r = mongoc_gridfs_file_writev (file, iov, 1, 10000);
-   assert (errno == ETIMEDOUT);
-   assert (r < 4);
+   /* Test a write timeout over 50 ms */
+   future = future_gridfs_file_readv (file, &riov, 1, 4, 50);
+   r = future_get_ssize_t (future);
+   usleep (100);
+   ASSERT_CMPINT (errno, ==, ETIMEDOUT);
+   ASSERT_CMPLONG (r, <, 4);
 
    mongoc_gridfs_file_destroy (file);
 
