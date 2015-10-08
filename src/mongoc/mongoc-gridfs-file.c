@@ -623,6 +623,9 @@ _mongoc_gridfs_file_refresh_page (mongoc_gridfs_file_t *file)
       data = (uint8_t *)"";
       len = 0;
    } else {
+      if (file->cursor) {
+         /* If the chunk is in the next batch, issue a GET_MORE */
+      }
       /* If we have a cursor, discard it if it doesn't have our chunk in the current batch */
       if (file->cursor && (file->n < file->chunk_range[0] || file->n > file->chunk_range[1])) {
          mongoc_cursor_destroy (file->cursor);

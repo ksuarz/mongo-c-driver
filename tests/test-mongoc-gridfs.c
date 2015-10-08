@@ -418,6 +418,11 @@ test_long_seek (void)
       ASSERT_CMPINT64 (cursor_id, ==, mongoc_cursor_get_id (file->cursor));
    }
 
+   /* Seek to an adjacent batch, issuing a getMore on the cursor */
+   {
+
+   }
+
    /* Skip ahead many pages, destroying the old cursor */
    {
       /* Seek to the fourth page */
