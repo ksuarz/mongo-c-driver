@@ -42,7 +42,7 @@ get_mock_gridfs (mock_server_t   *server,
    request = mock_server_receives_command (server,
                                            name,
                                            MONGOC_QUERY_SLAVE_OK,
-                                           "{'createIndexes' : 'foo.chunks',"
+                                           "{'createIndexes' : 'fs.chunks',"
                                            " 'indexes' : ["
                                            "   { 'key' : { 'files_id' : 1, 'n' : 1 },"
                                            "     'name' : 'files_id_1_n_1', "
@@ -53,7 +53,7 @@ get_mock_gridfs (mock_server_t   *server,
    request = mock_server_receives_command (server,
                                            name,
                                            MONGOC_QUERY_SLAVE_OK,
-                                           "{'createIndexes' : 'foo.chunks',"
+                                           "{'createIndexes' : 'fs.chunks',"
                                            " 'indexes' : ["
                                            "   { 'key' : { 'filename' : 1 },"
                                            "     'name' : 'filename_1' }"
@@ -447,11 +447,10 @@ test_long_seek (void)
    }
 
    mongoc_gridfs_file_destroy (file);
-
    drop_collections (gridfs, &error);
    mongoc_gridfs_destroy (gridfs);
-
    mongoc_client_destroy (client);
+   mock_server_destroy (server);
 }
 
 
